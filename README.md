@@ -13,6 +13,7 @@
 ```bash
 # 0. Clone the repo
 git clone https://github.com/lizard-demon/hfydl
+cd hfydl
 
 # 1. Create and activate a virtual environment (if you don't already have one)
 python3 -m venv venv
