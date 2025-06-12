@@ -1,11 +1,6 @@
 # HFYDL — Reddit HFY Story to EPUB
 
-**Turn an HFY story chain on Reddit into a clean, offline EPUB.**
-Scrapes linked "Next" posts. Bundles them into an ebook. Nothing else.
-
----
-
-## ✨ Features
+**✨ Features**
 
 * Follows “Next” links across posts
 * Grabs only the post text and author
@@ -13,9 +8,7 @@ Scrapes linked "Next" posts. Bundles them into an ebook. Nothing else.
 * Outputs a single `.epub` file
 * Optional cover support
 
----
-
-## 🛠️ Installation
+**🛠️ Installation**
 
 ```bash
 # 1. Create and activate a virtual environment (if you don't already have one)
@@ -26,34 +19,16 @@ source venv/bin/activate
 pip install requests beautifulsoup4 pypandoc
 ```
 
----
-
-## 📚 Usage
+**📚 Usage**
 
 ```bash
-./hfydl.py "https://reddit.com/r/HFY/comments/xxxxxx/story_part_1/"
+./hfydl.py "https://reddit.com/r/HFY/comments/xxxxxx/story_part_1/" \
+# The following are optional \
+  -o story.epub \
+  -t "Title" \
+  -a "Author" \
+  -c cover.jpg
 ```
-
-### Optional flags:
-
-```bash
--o FILE       # output filename (default: story.epub)
--t TITLE      # title of the book
--a AUTHOR     # author name
--c IMAGE      # path to a cover image (optional)
-```
-
-### Example:
-
-```bash
-./hfydl.py "https://old.reddit.com/r/HFY/comments/abcd1234/my_story_part_1/" \
-  -o fuckaliens.epub \
-  -t "Humans Fuck Alens! (not like that)" \
-  -a "u/humansrule" \
-  -c deadalien.jpg
-```
-
----
 
 ## 🧼 Output
 
