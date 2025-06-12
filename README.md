@@ -1,7 +1,3 @@
-Here’s a **brutally simple and beautiful** `README.md` for your script:
-
----
-
 # HFYDL — Reddit HFY Story to EPUB
 
 **Turn an HFY story chain on Reddit into a clean, offline EPUB.**
