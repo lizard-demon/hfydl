@@ -11,19 +11,25 @@
 **🛠️ Installation**
 
 ```bash
+# 0. Clone the repo
+git clone https://github.com/lizard-demon/hfydl
+
 # 1. Create and activate a virtual environment (if you don't already have one)
 python3 -m venv venv
 source venv/bin/activate
 
 # 2. Install the dependencies
 pip install requests beautifulsoup4 pypandoc
+
+# 3. Make the python script executable
+chmod +x hfydl.py
 ```
 
 **📚 Usage**
 
 ```bash
 ./hfydl.py "https://reddit.com/r/HFY/comments/xxxxxx/story_part_1/" \
-# The following are optional \
+`# The following are optional` \
   -o story.epub \
   -t "Title" \
   -a "Author" \
