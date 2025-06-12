@@ -118,7 +118,8 @@ def reddit_ebook(
         if cover_image and Path(cover_image).exists():
             args.append(f'--epub-cover-image={cover_image}')
 
-        pypandoc.convert_file(md_path, to='epub', outputfile=output_file, extra_args=args)
+        pypandoc.convert_file(md_path, to='epub', outputfile=os.path.abspath(output_file), extra_args=args, cworkdir=tmpdir)
+
 
     done(f"EPUB saved: {output_file}")
 
