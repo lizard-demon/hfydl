@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-
 import re
 import requests
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urldefrag
 from bs4 import BeautifulSoup
 import pypandoc
 from pathlib import Path
@@ -10,11 +9,13 @@ import tempfile
 import os
 import argparse
 import sys
+from model2vec import StaticModel
+import numpy as np
 
 # --- Constants ---
 HEADERS = {'User-Agent': 'HFY-Navigator'}
-NEXT_RE = re.compile(r'\bnext\b', re.I)
-
+NEXT_RE = re.compile(r'\bnext\b|\bpart\b', re.I)
+NUM_RE = re.compile(r'\b(\d{1,3})\b')
 DEFAULT_CSS = """
 body { font-family: sans-serif; line-height: 1.6; margin: 5%; font-size: 1.05em; color: #111; background: #fff; }
 h1, h2, h3 { font-weight: 600; color: #222; margin-top: 2em; margin-bottom: 0.5em; }
@@ -29,56 +30,99 @@ def warn(msg): print(f"⚠️ {msg}", file=sys.stderr)
 def done(msg): print(f"✔️ {msg}")
 def info(msg): print(f"→ {msg}")
 
-# --- Core Logic ---
-def crawl_hfy_story(start_url):
+# --- Cosine Similarity ---
+def cosine_similarity(a, b):
+    a, b = np.array(a), np.array(b)
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+# --- Normalize URL: Remove fragment and trailing slash ---
+def normalize_url(url):
+    url, _ = urldefrag(url)
+    return url.rstrip('/')
+
+# --- Load Model2Vec Model Once ---
+model = StaticModel.from_pretrained("minishlab/potion-base-8M")
+
+# --- Heuristic Recursive Crawler ---
+def crawl_hfy_story(start_url, max_depth=15):
     visited = set()
     sequence = []
-    step = 1
+    op_author = [None]
 
-    def next_link(url):
+    def score(title, author, sub, last_title, last_sub, last_num):
+        s = 0
+        if author == op_author[0]:
+            s += 3
+        if sub == last_sub:
+            s += 1
+        if last_title:
+            try:
+                emb1 = model.encode([title])[0]
+                emb2 = model.encode([last_title])[0]
+                if cosine_similarity(emb1, emb2) > 0.8:
+                    s += 2
+            except Exception as e:
+                warn(f"Similarity error: {e}")
+        if (m := NUM_RE.search(title)):
+            n = int(m.group(1))
+            if last_num is not None and n == last_num + 1:
+                s += 2
+        return s
+
+    def get_links(url, last_title, last_sub, last_num):
         html = requests.get(url, headers=HEADERS).text
         soup = BeautifulSoup(html, 'html.parser')
+        if not op_author[0]:
+            a = soup.select_one('a[href^="/user/"]')
+            if a:
+                op_author[0] = a.text.strip()
+        links = []
+        base = urlparse(url)
+        for a in soup.select('a[href]'):
+            href = normalize_url(urljoin(url, a['href']))
+            if href in visited or 'comments' not in href:
+                continue
+            title = a.text.strip()
+            if not title or len(title) > 120:
+                continue
+            author = a.get('data-click-id') or op_author[0]
+            sub = urlparse(href).path.split('/')[2] if '/r/' in href else base.path.split('/')[2]
+            score_val = score(title, author, sub, last_title, last_sub, last_num)
+            if score_val:
+                links.append((score_val, href, title, sub))
+        return sorted(links, key=lambda x: -x[0])
+
+    def walk(url, depth=0, last_title=None, last_num=None):
+        if depth > max_depth:
+            return
+        url = normalize_url(url)
+        if url in visited:
+            return
         visited.add(url)
-
-        for a in soup.find_all('a', href=True):
-            if NEXT_RE.search(a.text):
-                full = urljoin(url, a['href'])
-                if full not in visited:
-                    return full
-
-        for c in soup.select('div[data-testid="comment"]'):
-            author = c.select_one('[data-testid="comment_author_link"]')
-            if author and 'OP' in author.text.upper():
-                for a in c.find_all('a', href=True):
-                    if NEXT_RE.search(a.text):
-                        full = urljoin(url, a['href'])
-                        if full not in visited:
-                            return full
-        return None
+        info(f"[{depth+1}] {url}")
+        sequence.append(url)
+        candidates = get_links(url, last_title, urlparse(url).path.split('/')[2], last_num)
+        for _, href, title, sub in candidates:
+            num = int(NUM_RE.search(title).group(1)) if NUM_RE.search(title) else None
+            return walk(href, depth+1, title, num)
 
     say("Crawling story chain:")
-    while start_url:
-        info(f"[{step}] {start_url}")
-        sequence.append(start_url)
-        start_url = next_link(start_url)
-        step += 1
-
+    walk(start_url)
     done(f"Found {len(sequence)} post(s).")
     return '\n'.join(sequence)
 
+# --- EPUB Generator ---
 def reddit_ebook(
     urls_text, output_file="reddit.epub",
     title="Title",
     author="Author",
     cover_image=None
 ):
-    urls = [u.strip() for u in urls_text.splitlines() if u.strip()]
+    urls = [normalize_url(u.strip()) for u in urls_text.splitlines() if u.strip()]
     posts = []
-
     say(f"Downloading {len(urls)} Reddit post(s)...")
-
     for i, url in enumerate(urls, 1):
-        jurl = url.rstrip('/') + '/.json'
+        jurl = url + '/.json'
         try:
             data = requests.get(jurl, headers=HEADERS).json()
             post = data[0]['data']['children'][0]['data']
@@ -92,21 +136,16 @@ def reddit_ebook(
                 warn(f"Skipped (empty): {url}")
         except Exception as e:
             warn(f"Error parsing {url}: {e}")
-
     if not posts:
         warn("No valid posts found.")
         return
-
     full_md = "\n\n\\newpage\n\n".join(posts)
-
     say("Converting to EPUB...")
     with tempfile.TemporaryDirectory() as tmpdir:
         md_path = os.path.join(tmpdir, "input.md")
         css_path = os.path.join(tmpdir, "style.css")
-
         Path(md_path).write_text(full_md, encoding='utf-8')
         Path(css_path).write_text(DEFAULT_CSS)
-
         args = [
             f'--metadata=title:{title}',
             f'--metadata=author:{author}',
@@ -114,13 +153,9 @@ def reddit_ebook(
             '--css=style.css',
             '--split-level=1'
         ]
-
         if cover_image and Path(cover_image).exists():
             args.append(f'--epub-cover-image={cover_image}')
-
         pypandoc.convert_file(md_path, to='epub', outputfile=os.path.abspath(output_file), extra_args=args, cworkdir=tmpdir)
-
-
     done(f"EPUB saved: {output_file}")
 
 # --- CLI Interface ---
@@ -134,7 +169,6 @@ def main():
     parser.add_argument("-a", "--author", default="Author", help="Author name")
     parser.add_argument("-c", "--cover", help="Optional cover image (path to file)")
     args = parser.parse_args()
-
     links = crawl_hfy_story(args.url)
     reddit_ebook(
         links,
@@ -144,5 +178,7 @@ def main():
         cover_image=args.cover
     )
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 if __name__ == "__main__":
     main()
+
