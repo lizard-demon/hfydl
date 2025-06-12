@@ -112,7 +112,7 @@ def reddit_ebook(
             f'--metadata=author:{author}',
             '--toc', '--toc-depth=2',
             '--css=style.css',
-            '--split-level=1'  # ← replaces deprecated --epub-chapter-level
+            '--split-level=1'
         ]
 
         if cover_image and Path(cover_image).exists():
