@@ -30,15 +30,13 @@ pip install requests beautifulsoup4 pypandoc
   -c cover.jpg
 ```
 
-## 🧼 Output
+**🧼 Output**
 
 * EPUB file: ready to sideload into your e-reader
 * Clean formatting, headers, and page breaks
 * Compatible with most readers (tested with Calibre, Kindle, KOReader)
 
----
-
-## ✅ Dependencies
+**✅ Dependencies**
 
 * Python 3.x
 * [requests](https://pypi.org/project/requests/)
@@ -47,24 +45,18 @@ pip install requests beautifulsoup4 pypandoc
 * [pandoc](https://pandoc.org/) — must be installed and available in your PATH
   * [Download](https://pandoc.org/installing.html)
 
----
-
-## 💡 Tips
+**💡 Tips**
 
 * Ensure you use the first post in the series.
 * Requires the story to be chained with “next”. Capitalization is irrelivant.
 * If a post has no text (`selftext`), it will be skipped.
 
----
-
-## 🐛 Caveats
+**🐛 Caveats**
 
 * Doesn’t support image posts or external links.
 * Won’t detect custom next/previous link formats.
 * Reddit API quirks may cause occasional hiccups.
 
----
-
-## 📄 License
+**📄 License**
 
 GPL3 License. Fuck corpos.
