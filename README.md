@@ -30,7 +30,6 @@ chmod +x hfydl.py
 
 ```bash
 ./hfydl.py "https://reddit.com/r/HFY/comments/xxxxxx/story_part_1/" \
-`# The following are optional` \
   -o story.epub \
   -t "Title" \
   -a "Author" \
