@@ -49,6 +49,21 @@ OPERANDS
            The initial Reddit post to begin crawling from. If omitted, use
            -from-list to provide posts.
 
+INSTALLATION
+     Install dependencies via pip and system tools:
+
+           python3 -m venv venv
+           . venv/bin/activate
+           pip install -r requirements.txt
+
+     You also need a working Pandoc installation for format conversion:
+
+           sudo apt install pandoc            # Debian/Ubuntu
+           brew install pandoc                # macOS
+           choco install pandoc               # Windows
+
+     Optionally, install a LaTeX engine (e.g., texlive) for PDF output.
+
 FILES
      ~/.cache/model2vec/
            Stores the pretrained story embedding model.
@@ -72,3 +87,8 @@ EXAMPLES
      Crawl only and save the URL chain:
 
            hfydl https://reddit.com/... -crawl-only story.txt
+
+AUTHORS
+     Lizard Demon - Find me over on reddit u/lizrd_demon.
+
+
