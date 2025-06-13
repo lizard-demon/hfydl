@@ -83,7 +83,7 @@ sudo chmod +x hfydl
 ***🧪 Save the crawl list without downloading:***
 
 ```bash
-./hfydl https://reddit.com/... --crawl-only story.txt
+./hfydl https://reddit.com/... --crawl-only links.txt
 ```
 
 ***🖋️ Edit discovered URLs before export:***
