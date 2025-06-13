@@ -1,140 +1,142 @@
 #!/usr/bin/env python3
 
-import re, requests, argparse, os, sys, tempfile, subprocess, json
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, urldefrag
+#!/usr/bin/env python3
+
+import os, re, json, sys, argparse, tempfile, subprocess
 from pathlib import Path
-import pypandoc, numpy as np
+from urllib.parse import urljoin, urldefrag
+import requests, numpy as np
+import pypandoc
+from bs4 import BeautifulSoup
 from model2vec import StaticModel
 
-say = lambda m: print(f"• {m}")
-warn = lambda m: print(f"⚠️ {m}", file=sys.stderr)
-done = lambda m: print(f"✔️ {m}")
-info = lambda m: print(f"→ {m}")
-normalize = lambda u: urldefrag(u)[0].rstrip('/')
 HEADERS = {'User-Agent': 'HFY-Navigator'}
 model = StaticModel.from_pretrained("minishlab/potion-base-8M")
 
+
+def say(msg): print(f"• {msg}")
+def info(msg): print(f"→ {msg}")
+def warn(msg): print(f"⚠️ {msg}", file=sys.stderr)
+def done(msg): print(f"✔️ {msg}")
+def norm(u): return urldefrag(u)[0].rstrip('/')
 def cosine(a, b): return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+def slug(s): return re.sub(r'[^a-z0-9]+', '-', s.lower()).strip('-')
 
-def crawl(start_url):
-    visited, sequence, titles, vectors = set(), [], [], []
-    op_author = None
-    sim_threshold = 0.72
-    def get_links(url, last_title):
-        nonlocal op_author
-        html = requests.get(url, headers=HEADERS).text
+
+def fetch(url):
+    try:
+        html = requests.get(url, headers=HEADERS, timeout=10).text
         soup = BeautifulSoup(html, 'html.parser')
-        if not op_author:
-            a = soup.select_one('a[href^="/user/"]')
-            if a: op_author = a.text.strip()
-        links = []
-        for a in soup.select('a[href]'):
-            href = normalize(urljoin(url, a['href']))
-            if href in visited or 'comments' not in href: continue
-            title = a.text.strip()
-            if not title or len(title) > 120: continue
-            try:
-                vec = model.encode([title])[0]
-                if len(titles) >= 3:
-                    avg = np.mean(vectors, axis=0)
-                    if cosine(vec, avg) < sim_threshold:
-                        warn(f"↓ Skipping (too different): {title}")
-                        continue
-                links.append((href, title, vec))
-            except: pass
-        return links
-    def walk(url, depth=0, last_title=None):
-        url = normalize(url)
-        if url in visited: return
-        visited.add(url)
-        info(f"[{depth+1}] {url}")
-        sequence.append(url)
-        if last_title:
-            try:
-                vec = model.encode([last_title])[0]
-                titles.append(last_title)
-                vectors.append(vec)
-            except: pass
-        for href, title, _ in get_links(url, last_title):
-            walk(href, depth+1, title)
-            break
-    say("Crawling story chain:")
-    walk(start_url)
-    done(f"Found {len(sequence)} post(s).")
-    return sequence
+        return soup, soup.select_one('a[href^="/user/"]')
+    except requests.RequestException as e:
+        warn(f"Failed to fetch {url}: {e}")
+        return BeautifulSoup("", "html.parser"), None
 
-def download_posts(urls):
-    posts, all_titles, all_authors = [], [], []
+
+def crawl(seed, temperature=0.5):
+    visited, chain, titles, vecs = set(), [], [], []
+    op = None
+
+    def links(url, title=None):
+        soup, op_a = fetch(url)
+        nonlocal op
+        if not op and op_a:
+            op = op_a.text.strip()
+        result = []
+        for a in soup.select('a[href]'):
+            href = norm(urljoin(url, a['href']))
+            t = a.text.strip()
+            if not t or len(t) > 120 or 'comments' not in href or href in visited:
+                continue
+            try:
+                v = model.encode([t])[0]
+                avg = np.mean(vecs, axis=0) if vecs else v
+                if titles and cosine(v, avg) < temperature:
+                    warn(f"↓ Skipping (too different): {t}")
+                    continue
+                result.append((href, t, v))
+            except Exception as e:
+                warn(f"Encoding error on '{t}': {e}")
+        return result
+
+    def walk(url, t=None, d=0):
+        url = norm(url)
+        if url in visited:
+            return
+        visited.add(url)
+        info(f"[{d+1}] {url}")
+        chain.append(url)
+        if t:
+            try:
+                v = model.encode([t])[0]
+                titles.append(t)
+                vecs.append(v)
+            except Exception as e:
+                warn(f"Vectorization failed: {e}")
+        for href, t, _ in links(url, t):
+            walk(href, t, d + 1)
+            break
+
+    say("Crawling story chain:")
+    walk(seed)
+    done(f"Found {len(chain)} post(s).")
+    return chain
+
+
+def fetch_posts(urls):
+    all, titles, authors = [], [], []
     for u in urls:
         try:
-            j = requests.get(u + "/.json", headers=HEADERS).json()
+            j = requests.get(u + "/.json", headers=HEADERS, timeout=10).json()
             post = j[0]['data']['children'][0]['data']
-            title, body = post['title'], post['selftext'].strip()
-            author = post['author']
-            if body:
-                all_titles.append(title)
-                all_authors.append(author)
-                posts.append((title, author, body))
-                info(f"✓ {title} (u/{author})")
-            else: warn(f"Skipped (empty): {u}")
-        except Exception as e:
-            warn(f"Failed {u}: {e}")
-    return posts, all_titles, most_common(all_authors)
+            t, b, a = post['title'], post['selftext'].strip(), post['author']
+            if b:
+                info(f"✓ {t} (u/{a})")
+                titles.append(t)
+                authors.append(a)
+                all.append((t, a, b))
+            else:
+                warn(f"Empty post: {u}")
+        except (requests.RequestException, KeyError, IndexError, json.JSONDecodeError) as e:
+            warn(f"Error parsing {u}: {e}")
+    return all, titles, max(set(authors), key=authors.count) if authors else "Anonymous"
 
-def common_prefix(tokens_list):
-    if not tokens_list: return ""
-    prefix = tokens_list[0]
-    for tokens in tokens_list[1:]:
-        i = 0
-        while i < len(prefix) and i < len(tokens) and prefix[i] == tokens[i]:
-            i += 1
-        prefix = prefix[:i]
-    return " ".join(prefix).strip()
 
-def most_common(items):
-    return max(set(items), key=items.count) if items else "Anonymous"
+def prefix(words):
+    split = [re.findall(r'\w+', w.lower()) for w in words]
+    if not split:
+        return "Untitled"
+    first = split[0]
+    for i, w in enumerate(first):
+        if any(len(s) <= i or s[i] != w for s in split):
+            return " ".join(first[:i]).title() or "Untitled"
+    return " ".join(first).title()
 
-def guess_title(titles):
-    token_lists = [re.findall(r'\w+', t.lower()) for t in titles]
-    prefix = common_prefix(token_lists)
-    return prefix.title() if prefix else "Untitled"
 
-def slugify(text):
-    return re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
+def write_md(posts, title, author, path):
+    md = "\n\n\\newpage\n\n".join(f"# {t}\n\n*by u/{a}*\n\n{b}" for t, a, b in posts)
+    Path(path).write_text(md, encoding='utf-8')
+    done(f"Markdown: {path}")
 
-def write_markdown(posts, title, author, outname):
-    md = "\n\n\\newpage\n\n".join(
-        f"# {t}\n\n*by u/{a}*\n\n{b}" for t,a,b in posts
-    )
-    Path(outname).write_text(md, encoding='utf-8')
-    done(f"Saved Markdown: {outname}")
 
-def write_json(posts, title, author, outname):
-    data = {
+def write_json(posts, title, author, path):
+    doc = {
         "title": title,
         "author": author,
-        "chapters": [
-            {"title": t, "author": a, "body": b} for t,a,b in posts
-        ]
+        "chapters": [{"title": t, "author": a, "body": b} for t, a, b in posts]
     }
-    Path(outname).write_text(json.dumps(data, indent=2), encoding='utf-8')
-    done(f"Saved JSON: {outname}")
+    Path(path).write_text(json.dumps(doc, indent=2), encoding='utf-8')
+    done(f"JSON: {path}")
 
-def make_output(posts, title, author, outname, fmt, cover=None):
-    if fmt == "markdown":
-        return write_markdown(posts, title, author, outname)
+
+def convert(posts, title, author, fmt, out, cover=None):
+    if fmt in ("markdown", "md"):
+        return write_md(posts, title, author, out)
     if fmt == "json":
-        return write_json(posts, title, author, outname)
+        return write_json(posts, title, author, out)
 
-    md = "\n\n\\newpage\n\n".join(
-        f"# {t}\n\n*by u/{a}*\n\n{b}" for t,a,b in posts
-    )
-    css = """
-    body { font-family: sans-serif; line-height: 1.6; margin: 5%; font-size: 1.05em; color: #111; background: #fff; }
-    h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }
-    em { color: #555; }
-    """
+    md = "\n\n\\newpage\n\n".join(f"# {t}\n\n*by u/{a}*\n\n{b}" for t, a, b in posts)
+    css = "body { font-family: serif; margin: 5%; line-height: 1.6; }"
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, "in.md").write_text(md, encoding='utf-8')
         Path(tmp, "style.css").write_text(css)
@@ -143,53 +145,68 @@ def make_output(posts, title, author, outname, fmt, cover=None):
             f"--metadata=author:{author}",
             "--toc", "--toc-depth=2", "--css=style.css", "--split-level=1"
         ]
-        if fmt == "epub" and cover and Path(cover).exists():
+        if fmt == "epub" and cover:
             args.append(f"--epub-cover-image={cover}")
-        pypandoc.convert_file(
-            os.path.join(tmp, "in.md"), to=fmt,
-            outputfile=os.path.abspath(outname),
-            extra_args=args, cworkdir=tmp
-        )
-    done(f"Saved {fmt.upper()}: {outname}")
+        try:
+            pypandoc.convert_file(Path(tmp, "in.md"), fmt, outputfile=os.path.abspath(out), extra_args=args, cworkdir=tmp)
+            done(f"{fmt.upper()}: {out}")
+        except RuntimeError as e:
+            warn(f"Conversion failed: {e}")
+            sys.exit(1)
 
-def edit_file(path):
-    subprocess.run([os.environ.get("EDITOR", "nano" if os.name != "nt" else "notepad"), path])
+
+def edit(path):
+    try:
+        subprocess.run([os.environ.get("EDITOR", "nano" if os.name != "nt" else "notepad"), path])
+    except Exception as e:
+        warn(f"Editor failed: {e}")
+
 
 def main():
-    p = argparse.ArgumentParser(description="📘 Convert Reddit HFY chains into documents")
-    p.add_argument("url", nargs="?", help="Starting Reddit post URL")
-    p.add_argument("--edit", action="store_true", help="Edit URL list before output")
-    p.add_argument("--crawl-only", metavar="FILE", help="Crawl only, save URLs")
-    p.add_argument("--from-list", metavar="FILE", help="Build output from URL list")
-    p.add_argument("--format", default="epub", help="Output format (epub, pdf, markdown, json, html...)")
-    p.add_argument("--cover", help="Optional cover image for EPUB")
-    args = p.parse_args()
+    a = argparse.ArgumentParser(description="📘 Reddit story chain to EPUB/MD/JSON/PDF/etc")
+    a.add_argument("url", nargs="?", help="Starting Reddit URL")
+    a.add_argument("--edit", action="store_true", help="Edit URL list before export")
+    a.add_argument("--crawl-only", metavar="FILE", help="Save crawl list to file")
+    a.add_argument("--from-list", metavar="FILE", help="Read URLs from file")
+    a.add_argument("--format", default="epub", help="Output format: epub, pdf, markdown, json, html, docx, odt...")
+    a.add_argument("--cover", help="Optional cover image")
+    a.add_argument("--temperature", type=float, default=0.5, help="Similarity temperature (0.0–1.0)")
+    args = a.parse_args()
 
     if args.from_list:
         urls = Path(args.from_list).read_text().splitlines()
     elif args.url:
-        urls = crawl(args.url)
+        urls = crawl(args.url, temperature=args.temperature)
         if args.crawl_only:
             Path(args.crawl_only).write_text("\n".join(urls))
             done(f"Saved to {args.crawl_only}")
             return
     else:
-        p.error("Need a starting URL or --from-list")
+        a.error("Provide a Reddit URL or --from-list")
 
     if args.edit:
         with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".txt") as f:
             f.write("\n".join(urls))
             f.flush()
-            edit_file(f.name)
+            edit(f.name)
             urls = Path(f.name).read_text().splitlines()
 
-    posts, titles, author = download_posts(urls)
-    story_title = guess_title(titles)
-    ext = "json" if args.format == "json" else "md" if args.format == "markdown" else args.format
-    outname = slugify(story_title) + f".{ext}"
-    make_output(posts, story_title, author, outname, args.format, cover=args.cover)
+    posts, titles, author = fetch_posts(urls)
+    title = prefix(titles)
+    ext = "json" if args.format == "json" else "md" if "md" in args.format else args.format
+    out = slug(title) + f".{ext}"
+    convert(posts, title, author, args.format, out, cover=args.cover)
+
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        warn("Interrupted by user.")
+        sys.exit(130)
+    except Exception as e:
+        warn(f"Unhandled error: {e.__class__.__name__}: {e}")
+        sys.exit(1)
 
