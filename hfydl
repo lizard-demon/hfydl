@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-#!/usr/bin/env python3
-
 import os, re, json, sys, argparse, tempfile, subprocess
 from pathlib import Path
 from urllib.parse import urljoin, urldefrag
@@ -9,6 +7,8 @@ import requests, numpy as np
 import pypandoc
 from bs4 import BeautifulSoup
 from model2vec import StaticModel
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 HEADERS = {'User-Agent': 'HFY-Navigator'}
 model = StaticModel.from_pretrained("minishlab/potion-base-8M")
@@ -19,30 +19,40 @@ def info(msg): print(f"→ {msg}")
 def warn(msg): print(f"⚠️ {msg}", file=sys.stderr)
 def done(msg): print(f"✔️ {msg}")
 def norm(u): return urldefrag(u)[0].rstrip('/')
-def cosine(a, b): return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+def cosine(a, b):
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    return np.dot(a, b) / (na * nb) if na and nb else 0.0
 def slug(s): return re.sub(r'[^a-z0-9]+', '-', s.lower()).strip('-')
+def read_lines(path): return Path(path).read_text(encoding="utf-8").splitlines()
 
 
 def fetch(url):
     try:
         html = requests.get(url, headers=HEADERS, timeout=10).text
-        soup = BeautifulSoup(html, 'html.parser')
-        return soup, soup.select_one('a[href^="/user/"]')
+        return BeautifulSoup(html, 'html.parser')
     except requests.RequestException as e:
         warn(f"Failed to fetch {url}: {e}")
-        return BeautifulSoup("", "html.parser"), None
+        return BeautifulSoup("", "html.parser")
 
 
-def crawl(seed, temperature=0.5):
+def follow_chain(seed, temperature=0.5):
     visited, chain, titles, vecs = set(), [], [], []
+    url = norm(seed)
     op = None
 
-    def links(url, title=None):
-        soup, op_a = fetch(url)
-        nonlocal op
-        if not op and op_a:
-            op = op_a.text.strip()
-        result = []
+    while url and url not in visited:
+        visited.add(url)
+        info(f"[{len(chain)+1}] {url}")
+        chain.append(url)
+
+        soup = fetch(url)
+
+        if not op:
+            a = soup.select_one('a[href^="/user/"]')
+            if a:
+                op = a.text.strip()
+
+        candidates = []
         for a in soup.select('a[href]'):
             href = norm(urljoin(url, a['href']))
             t = a.text.strip()
@@ -54,31 +64,18 @@ def crawl(seed, temperature=0.5):
                 if titles and cosine(v, avg) < temperature:
                     warn(f"↓ Skipping (too different): {t}")
                     continue
-                result.append((href, t, v))
+                candidates.append((href, t, v))
             except Exception as e:
                 warn(f"Encoding error on '{t}': {e}")
-        return result
 
-    def walk(url, t=None, d=0):
-        url = norm(url)
-        if url in visited:
-            return
-        visited.add(url)
-        info(f"[{d+1}] {url}")
-        chain.append(url)
-        if t:
-            try:
-                v = model.encode([t])[0]
-                titles.append(t)
-                vecs.append(v)
-            except Exception as e:
-                warn(f"Vectorization failed: {e}")
-        for href, t, _ in links(url, t):
-            walk(href, t, d + 1)
+        if not candidates:
             break
 
-    say("Crawling story chain:")
-    walk(seed)
+        next_url, t, v = candidates[0]
+        url = next_url
+        titles.append(t)
+        vecs.append(v)
+
     done(f"Found {len(chain)} post(s).")
     return chain
 
@@ -102,7 +99,7 @@ def fetch_posts(urls):
     return all, titles, max(set(authors), key=authors.count) if authors else "Anonymous"
 
 
-def prefix(words):
+def guess_title(words):
     split = [re.findall(r'\w+', w.lower()) for w in words]
     if not split:
         return "Untitled"
@@ -113,8 +110,12 @@ def prefix(words):
     return " ".join(first).title()
 
 
+def to_markdown(posts):
+    return "\n\n\\newpage\n\n".join(f"# {t}\n\n*by u/{a}*\n\n{b}" for t, a, b in posts)
+
+
 def write_md(posts, title, author, path):
-    md = "\n\n\\newpage\n\n".join(f"# {t}\n\n*by u/{a}*\n\n{b}" for t, a, b in posts)
+    md = to_markdown(posts)
     Path(path).write_text(md, encoding='utf-8')
     done(f"Markdown: {path}")
 
@@ -135,7 +136,7 @@ def convert(posts, title, author, fmt, out, cover=None):
     if fmt == "json":
         return write_json(posts, title, author, out)
 
-    md = "\n\n\\newpage\n\n".join(f"# {t}\n\n*by u/{a}*\n\n{b}" for t, a, b in posts)
+    md = to_markdown(posts)
     css = "body { font-family: serif; margin: 5%; line-height: 1.6; }"
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, "in.md").write_text(md, encoding='utf-8')
@@ -174,9 +175,9 @@ def main():
     args = a.parse_args()
 
     if args.from_list:
-        urls = Path(args.from_list).read_text().splitlines()
+        urls = read_lines(args.from_list)
     elif args.url:
-        urls = crawl(args.url, temperature=args.temperature)
+        urls = follow_chain(args.url, temperature=args.temperature)
         if args.crawl_only:
             Path(args.crawl_only).write_text("\n".join(urls))
             done(f"Saved to {args.crawl_only}")
@@ -189,16 +190,14 @@ def main():
             f.write("\n".join(urls))
             f.flush()
             edit(f.name)
-            urls = Path(f.name).read_text().splitlines()
+            urls = read_lines(f.name)
 
     posts, titles, author = fetch_posts(urls)
-    title = prefix(titles)
+    title = guess_title(titles)
     ext = "json" if args.format == "json" else "md" if "md" in args.format else args.format
     out = slug(title) + f".{ext}"
     convert(posts, title, author, args.format, out, cover=args.cover)
 
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 if __name__ == "__main__":
     try:
