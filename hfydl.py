@@ -1,182 +1,193 @@
 #!/usr/bin/env python3
-import re
-import requests
-from urllib.parse import urljoin, urlparse, urldefrag
+
+import re, requests, argparse, os, sys, tempfile, subprocess, json
 from bs4 import BeautifulSoup
-import pypandoc
+from urllib.parse import urljoin, urlparse, urldefrag
 from pathlib import Path
-import tempfile
-import os
-import argparse
-import sys
+import pypandoc, numpy as np
 from model2vec import StaticModel
-import numpy as np
 
-# --- Constants ---
+say = lambda m: print(f"• {m}")
+warn = lambda m: print(f"⚠️ {m}", file=sys.stderr)
+done = lambda m: print(f"✔️ {m}")
+info = lambda m: print(f"→ {m}")
+normalize = lambda u: urldefrag(u)[0].rstrip('/')
 HEADERS = {'User-Agent': 'HFY-Navigator'}
-NEXT_RE = re.compile(r'\bnext\b|\bpart\b', re.I)
-NUM_RE = re.compile(r'\b(\d{1,3})\b')
-DEFAULT_CSS = """
-body { font-family: sans-serif; line-height: 1.6; margin: 5%; font-size: 1.05em; color: #111; background: #fff; }
-h1, h2, h3 { font-weight: 600; color: #222; margin-top: 2em; margin-bottom: 0.5em; }
-h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }
-em { color: #555; font-style: italic; }
-p { margin: 1em 0; }
-"""
-
-# --- Terminal Output Helpers ---
-def say(msg): print(f"• {msg}")
-def warn(msg): print(f"⚠️ {msg}", file=sys.stderr)
-def done(msg): print(f"✔️ {msg}")
-def info(msg): print(f"→ {msg}")
-
-# --- Cosine Similarity ---
-def cosine_similarity(a, b):
-    a, b = np.array(a), np.array(b)
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-# --- Normalize URL: Remove fragment and trailing slash ---
-def normalize_url(url):
-    url, _ = urldefrag(url)
-    return url.rstrip('/')
-
-# --- Load Model2Vec Model Once ---
 model = StaticModel.from_pretrained("minishlab/potion-base-8M")
 
-# --- Heuristic Recursive Crawler ---
-def crawl_hfy_story(start_url, max_depth=15):
-    visited = set()
-    sequence = []
-    op_author = [None]
+def cosine(a, b): return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-    def score(title, author, sub, last_title, last_sub, last_num):
-        s = 0
-        if author == op_author[0]:
-            s += 3
-        if sub == last_sub:
-            s += 1
-        if last_title:
-            try:
-                emb1 = model.encode([title])[0]
-                emb2 = model.encode([last_title])[0]
-                if cosine_similarity(emb1, emb2) > 0.8:
-                    s += 2
-            except Exception as e:
-                warn(f"Similarity error: {e}")
-        if (m := NUM_RE.search(title)):
-            n = int(m.group(1))
-            if last_num is not None and n == last_num + 1:
-                s += 2
-        return s
-
-    def get_links(url, last_title, last_sub, last_num):
+def crawl(start_url):
+    visited, sequence, titles, vectors = set(), [], [], []
+    op_author = None
+    sim_threshold = 0.72
+    def get_links(url, last_title):
+        nonlocal op_author
         html = requests.get(url, headers=HEADERS).text
         soup = BeautifulSoup(html, 'html.parser')
-        if not op_author[0]:
+        if not op_author:
             a = soup.select_one('a[href^="/user/"]')
-            if a:
-                op_author[0] = a.text.strip()
+            if a: op_author = a.text.strip()
         links = []
-        base = urlparse(url)
         for a in soup.select('a[href]'):
-            href = normalize_url(urljoin(url, a['href']))
-            if href in visited or 'comments' not in href:
-                continue
+            href = normalize(urljoin(url, a['href']))
+            if href in visited or 'comments' not in href: continue
             title = a.text.strip()
-            if not title or len(title) > 120:
-                continue
-            author = a.get('data-click-id') or op_author[0]
-            sub = urlparse(href).path.split('/')[2] if '/r/' in href else base.path.split('/')[2]
-            score_val = score(title, author, sub, last_title, last_sub, last_num)
-            if score_val:
-                links.append((score_val, href, title, sub))
-        return sorted(links, key=lambda x: -x[0])
-
-    def walk(url, depth=0, last_title=None, last_num=None):
-        if depth > max_depth:
-            return
-        url = normalize_url(url)
-        if url in visited:
-            return
+            if not title or len(title) > 120: continue
+            try:
+                vec = model.encode([title])[0]
+                if len(titles) >= 3:
+                    avg = np.mean(vectors, axis=0)
+                    if cosine(vec, avg) < sim_threshold:
+                        warn(f"↓ Skipping (too different): {title}")
+                        continue
+                links.append((href, title, vec))
+            except: pass
+        return links
+    def walk(url, depth=0, last_title=None):
+        url = normalize(url)
+        if url in visited: return
         visited.add(url)
         info(f"[{depth+1}] {url}")
         sequence.append(url)
-        candidates = get_links(url, last_title, urlparse(url).path.split('/')[2], last_num)
-        for _, href, title, sub in candidates:
-            num = int(NUM_RE.search(title).group(1)) if NUM_RE.search(title) else None
-            return walk(href, depth+1, title, num)
-
+        if last_title:
+            try:
+                vec = model.encode([last_title])[0]
+                titles.append(last_title)
+                vectors.append(vec)
+            except: pass
+        for href, title, _ in get_links(url, last_title):
+            walk(href, depth+1, title)
+            break
     say("Crawling story chain:")
     walk(start_url)
     done(f"Found {len(sequence)} post(s).")
-    return '\n'.join(sequence)
+    return sequence
 
-# --- EPUB Generator ---
-def reddit_ebook(
-    urls_text, output_file="reddit.epub",
-    title="Title",
-    author="Author",
-    cover_image=None
-):
-    urls = [normalize_url(u.strip()) for u in urls_text.splitlines() if u.strip()]
-    posts = []
-    say(f"Downloading {len(urls)} Reddit post(s)...")
-    for i, url in enumerate(urls, 1):
-        jurl = url + '/.json'
+def download_posts(urls):
+    posts, all_titles, all_authors = [], [], []
+    for u in urls:
         try:
-            data = requests.get(jurl, headers=HEADERS).json()
-            post = data[0]['data']['children'][0]['data']
-            title_ = post.get('title', f'Post {i}')
-            author_ = post.get('author', 'unknown')
-            body = post.get('selftext', '').strip()
+            j = requests.get(u + "/.json", headers=HEADERS).json()
+            post = j[0]['data']['children'][0]['data']
+            title, body = post['title'], post['selftext'].strip()
+            author = post['author']
             if body:
-                info(f"✓ {title_} (u/{author_})")
-                posts.append(f"# {title_}\n\n*by u/{author_}*\n\n{body}")
-            else:
-                warn(f"Skipped (empty): {url}")
+                all_titles.append(title)
+                all_authors.append(author)
+                posts.append((title, author, body))
+                info(f"✓ {title} (u/{author})")
+            else: warn(f"Skipped (empty): {u}")
         except Exception as e:
-            warn(f"Error parsing {url}: {e}")
-    if not posts:
-        warn("No valid posts found.")
-        return
-    full_md = "\n\n\\newpage\n\n".join(posts)
-    say("Converting to EPUB...")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        md_path = os.path.join(tmpdir, "input.md")
-        css_path = os.path.join(tmpdir, "style.css")
-        Path(md_path).write_text(full_md, encoding='utf-8')
-        Path(css_path).write_text(DEFAULT_CSS)
-        args = [
-            f'--metadata=title:{title}',
-            f'--metadata=author:{author}',
-            '--toc', '--toc-depth=2',
-            '--css=style.css',
-            '--split-level=1'
-        ]
-        if cover_image and Path(cover_image).exists():
-            args.append(f'--epub-cover-image={cover_image}')
-        pypandoc.convert_file(md_path, to='epub', outputfile=os.path.abspath(output_file), extra_args=args, cworkdir=tmpdir)
-    done(f"EPUB saved: {output_file}")
+            warn(f"Failed {u}: {e}")
+    return posts, all_titles, most_common(all_authors)
 
-# --- CLI Interface ---
+def common_prefix(tokens_list):
+    if not tokens_list: return ""
+    prefix = tokens_list[0]
+    for tokens in tokens_list[1:]:
+        i = 0
+        while i < len(prefix) and i < len(tokens) and prefix[i] == tokens[i]:
+            i += 1
+        prefix = prefix[:i]
+    return " ".join(prefix).strip()
+
+def most_common(items):
+    return max(set(items), key=items.count) if items else "Anonymous"
+
+def guess_title(titles):
+    token_lists = [re.findall(r'\w+', t.lower()) for t in titles]
+    prefix = common_prefix(token_lists)
+    return prefix.title() if prefix else "Untitled"
+
+def slugify(text):
+    return re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
+
+def write_markdown(posts, title, author, outname):
+    md = "\n\n\\newpage\n\n".join(
+        f"# {t}\n\n*by u/{a}*\n\n{b}" for t,a,b in posts
+    )
+    Path(outname).write_text(md, encoding='utf-8')
+    done(f"Saved Markdown: {outname}")
+
+def write_json(posts, title, author, outname):
+    data = {
+        "title": title,
+        "author": author,
+        "chapters": [
+            {"title": t, "author": a, "body": b} for t,a,b in posts
+        ]
+    }
+    Path(outname).write_text(json.dumps(data, indent=2), encoding='utf-8')
+    done(f"Saved JSON: {outname}")
+
+def make_output(posts, title, author, outname, fmt, cover=None):
+    if fmt == "markdown":
+        return write_markdown(posts, title, author, outname)
+    if fmt == "json":
+        return write_json(posts, title, author, outname)
+
+    md = "\n\n\\newpage\n\n".join(
+        f"# {t}\n\n*by u/{a}*\n\n{b}" for t,a,b in posts
+    )
+    css = """
+    body { font-family: sans-serif; line-height: 1.6; margin: 5%; font-size: 1.05em; color: #111; background: #fff; }
+    h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }
+    em { color: #555; }
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "in.md").write_text(md, encoding='utf-8')
+        Path(tmp, "style.css").write_text(css)
+        args = [
+            f"--metadata=title:{title}",
+            f"--metadata=author:{author}",
+            "--toc", "--toc-depth=2", "--css=style.css", "--split-level=1"
+        ]
+        if fmt == "epub" and cover and Path(cover).exists():
+            args.append(f"--epub-cover-image={cover}")
+        pypandoc.convert_file(
+            os.path.join(tmp, "in.md"), to=fmt,
+            outputfile=os.path.abspath(outname),
+            extra_args=args, cworkdir=tmp
+        )
+    done(f"Saved {fmt.upper()}: {outname}")
+
+def edit_file(path):
+    subprocess.run([os.environ.get("EDITOR", "nano" if os.name != "nt" else "notepad"), path])
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="📘 Convert a chain of HFY Reddit posts into a clean EPUB file."
-    )
-    parser.add_argument("url", help="Starting Reddit post URL (e.g. https://old.reddit.com/r/HFY/...)")
-    parser.add_argument("-o", "--output", default="story.epub", help="Output EPUB file")
-    parser.add_argument("-t", "--title", default="Title", help="Title for the ebook")
-    parser.add_argument("-a", "--author", default="Author", help="Author name")
-    parser.add_argument("-c", "--cover", help="Optional cover image (path to file)")
-    args = parser.parse_args()
-    links = crawl_hfy_story(args.url)
-    reddit_ebook(
-        links,
-        output_file=args.output,
-        title=args.title,
-        author=args.author,
-        cover_image=args.cover
-    )
+    p = argparse.ArgumentParser(description="📘 Convert Reddit HFY chains into documents")
+    p.add_argument("url", nargs="?", help="Starting Reddit post URL")
+    p.add_argument("--edit", action="store_true", help="Edit URL list before output")
+    p.add_argument("--crawl-only", metavar="FILE", help="Crawl only, save URLs")
+    p.add_argument("--from-list", metavar="FILE", help="Build output from URL list")
+    p.add_argument("--format", default="epub", help="Output format (epub, pdf, markdown, json, html...)")
+    p.add_argument("--cover", help="Optional cover image for EPUB")
+    args = p.parse_args()
+
+    if args.from_list:
+        urls = Path(args.from_list).read_text().splitlines()
+    elif args.url:
+        urls = crawl(args.url)
+        if args.crawl_only:
+            Path(args.crawl_only).write_text("\n".join(urls))
+            done(f"Saved to {args.crawl_only}")
+            return
+    else:
+        p.error("Need a starting URL or --from-list")
+
+    if args.edit:
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".txt") as f:
+            f.write("\n".join(urls))
+            f.flush()
+            edit_file(f.name)
+            urls = Path(f.name).read_text().splitlines()
+
+    posts, titles, author = download_posts(urls)
+    story_title = guess_title(titles)
+    ext = "json" if args.format == "json" else "md" if args.format == "markdown" else args.format
+    outname = slugify(story_title) + f".{ext}"
+    make_output(posts, story_title, author, outname, args.format, cover=args.cover)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 if __name__ == "__main__":
