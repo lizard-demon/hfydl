@@ -15,7 +15,7 @@
   `epub`, `pdf`, `markdown`, `html`, `docx`, `odt`, `json`, and more (via Pandoc).
 
 - ✍️ **Handcraft the Chapter List**  
-  Pause and tweak the post chain using your `$EDITOR`.  
+  Pause and tweak the url list using your `$EDITOR`.  
 
 - 📄 **Well Formatted Output**  
   All stories are saved as readable, paginated chapters, with a table of contents.
@@ -111,12 +111,12 @@ deactivate                  # exits the venv
 | Option              | Description                                                           |
 | ------------------- | --------------------------------------------------------------------- |
 | `--edit [EDITOR]`   | Edit the list of discovered URLs before exporting.                    |
-| `--crawl-only FILE` | Only crawl and save the URL chain to file (no downloading/exporting). |
-| `--from-list FILE`  | Read URLs from a file instead of crawling.                            |
 | `--format FORMAT`   | Output format (e.g. `epub`, `pdf`, `markdown`, `json`, `html`, etc.). |
 | `--cover IMAGE`     | Optional cover image for EPUB export.                                 |
+| `--crawl-only FILE` | Only crawl and save the URL list to file (no downloading/exporting).  |
+| `--from-list FILE`  | Only download and export from a file (no crawling).                   |
 | `--temperature VAL` | Similarity threshold (0.0–1.0) for following links (default: `0.5`).  |
-| `URL`               | Starting Reddit post (if `--from-list` is not used).                   |
+| `URL`               | Starting Reddit post (if `--from-list` is not used).                  |
 
 ---
 
