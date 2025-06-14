@@ -86,22 +86,22 @@ deactivate                  # exits the venv
 ./hfydl "https://www.reddit.com/r/HFY/comments/abc123/story_title"
 ```
 
-***📜 Use a file of links and export to Markdown:***
+***🖋️ Interrupt and edit the url list before downloading:***
+
+```bash
+./hfydl --edit "https://reddit.com/..."
+```
+
+***🧪 Save the url list without downloading:***
+
+```bash
+./hfydl "https://reddit.com/..." --crawl-only links.txt
+```
+
+***📜 Download url list without crawling:***
 
 ```bash
 ./hfydl --from-list links.txt --format markdown
-```
-
-***🧪 Save the crawl list without downloading:***
-
-```bash
-./hfydl https://reddit.com/... --crawl-only links.txt
-```
-
-***🖋️ Edit discovered URLs before export:***
-
-```bash
-./hfydl --edit https://reddit.com/...
 ```
 
 ---
