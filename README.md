@@ -30,34 +30,46 @@
 
 ## 🛠️ Installation
 
+### Prerequisites
+
+You need to have the following installed:
+
+* `python3`
+* `pandoc`
+* (optional) if you want pdfs: [pandoc pdf engine](https://pandoc.org/MANUAL.html#option--pdf-engine)
+
+### Unix-Based Install
+
 ```bash
+# Download Project
+git clone https://github.com/lizard-demon/hfydl
+cd hfydl
+
+# Create a virtual enviroment
 python3 -m venv venv
-source venv/bin/activate
+
+# Enter the virtual enviroment
+source ./venv/bin/activate
+
+Install Depedancies
 pip install -r requirements.txt
-````
 
-You also need **Pandoc** for format conversion:
-
-```bash
-# Debian/Ubuntu
-sudo apt install pandoc
-
-# macOS
-brew install pandoc
-
-# Windows
-choco install pandoc
-```
-
-Optional (for PDF export):
-
-```bash
-sudo apt install texlive
-```
-
-Make it executable:
-```bash
+# Make code executable
 sudo chmod +x hfydl
+
+# Now you have a working downloader
+./hfydl -h
+```
+
+***Note:***
+
+*If you ever want to use this tool again, you will need to re-enter your venv.*
+
+```bash
+cd hfydl                    # go to git folder
+source ./venv/bin/activate  # enter your venv
+./hfydl -h                  # now you can use it
+deactivate                  # exits the venv
 ```
 
 ---
