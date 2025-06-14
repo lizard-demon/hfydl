@@ -110,7 +110,7 @@ deactivate                  # exits the venv
 
 | Option              | Description                                                           |
 | ------------------- | --------------------------------------------------------------------- |
-| `--edit`            | Edit the list of discovered URLs before exporting.                    |
+| `--edit [EDITOR]`   | Edit the list of discovered URLs before exporting.                    |
 | `--crawl-only FILE` | Only crawl and save the URL chain to file (no downloading/exporting). |
 | `--from-list FILE`  | Read URLs from a file instead of crawling.                            |
 | `--format FORMAT`   | Output format (e.g. `epub`, `pdf`, `markdown`, `json`, `html`, etc.). |
