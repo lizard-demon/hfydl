@@ -120,15 +120,6 @@ deactivate                  # exits the venv
 
 ---
 
-## 📁 File Structure
-
-| File                  | Description                                |
-| --------------------- | ------------------------------------------ |
-| `hfydl`               | Main crawler and formatter script.         |
-| `requirements.txt`    | Python dependencies.                       |
-
----
-
 ## ❤️ Contribute
 
 I'm homeless. Food money is appriciated. 
