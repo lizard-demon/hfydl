@@ -35,10 +35,10 @@ def cosine(a, b):
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     return np.dot(a, b) / (na * nb) if na and nb else 0.0
     
-# Manual cleanup if user calls `--edit`
-def edit(path):
+# Manual cleanup with user-specified or environment editor
+def edit(path, editor):
     try:
-        subprocess.run([os.environ.get("EDITOR", "nano" if os.name != "nt" else "notepad"), path])
+        subprocess.run([editor, path])
     except Exception as e:
         log('warn', f"Editor failed: {e}")
     
@@ -211,7 +211,7 @@ def main():
     # CLI
     a = argparse.ArgumentParser(description="📘 Reddit story chain to EPUB/MD/JSON/PDF/etc")
     a.add_argument("url", nargs="?", help="Starting Reddit URL")
-    a.add_argument("--edit", action="store_true", help="Edit URL list before export")
+    a.add_argument("--edit", nargs="?", const=True, metavar="EDITOR", help="Edit URL list with optional editor (defaults to $EDITOR or vi)")
     a.add_argument("--crawl-only", metavar="FILE", help="Save crawl list to file")
     a.add_argument("--from-list", metavar="FILE", help="Read URLs from file")
     a.add_argument("--format", default="epub", help="Output format: epub, pdf, markdown, json, html, docx, odt...")
@@ -234,7 +234,8 @@ def main():
         with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".txt") as f:
             f.write("\n".join(urls))
             f.flush()
-            edit(f.name)
+            chosen_editor = args.edit if isinstance(args.edit, str) else os.environ.get("EDITOR", "vi")
+            edit(f.name, chosen_editor)
             urls = read_lines(f.name)
 
     # Run
