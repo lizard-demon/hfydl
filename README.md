@@ -51,7 +51,7 @@ python3 -m venv venv
 # Enter the virtual enviroment
 source ./venv/bin/activate
 
-Install Depedancies
+# Install Depedancies
 pip install -r requirements.txt
 
 # Make code executable
