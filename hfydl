@@ -14,39 +14,93 @@ HEADERS = {'User-Agent': 'HFY-Navigator'}
 model = StaticModel.from_pretrained("minishlab/potion-base-8M")
 
 
-# Helpers #
-
-# Pretty Terminal Output
-def log(level, msg):
-    prefix = {'info': '→', 'warn': '⚠️', 'done': '✔️', 'say': '•'}.get(level, '•')
-    print(f"{prefix} {msg}", file=sys.stderr if level == 'warn' else sys.stdout)
-    
-# Link Pruning Check
-def is_valid_candidate(href, text, visited):
-    return text and len(text) <= 120 and 'comments' in href and href not in visited
-    
-# Text Cleanup
-def norm(u): return urldefrag(u)[0].rstrip('/')
-def slug(s): return re.sub(r'[^a-z0-9]+', '-', s.lower()).strip('-')
-def read_lines(path): return Path(path).read_text(encoding="utf-8").splitlines()
-
-# Compare Embeddings
+def say(msg): print(f"• {msg}")
+def info(msg): print(f"→ {msg}")
+def warn(msg): print(f"⚠️ {msg}", file=sys.stderr)
+def done(msg): print(f"✔️ {msg}")
+def norm(u):
+    u = urldefrag(u)[0].split('?')[0]
+    return u.rstrip('/')
 def cosine(a, b):
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     return np.dot(a, b) / (na * nb) if na and nb else 0.0
-    
-# Manual cleanup with user-specified or environment editor
-def edit(path, editor):
+def slug(s): return re.sub(r'[^a-z0-9]+', '-', s.lower()).strip('-')
+def read_lines(path): return Path(path).read_text(encoding="utf-8").splitlines()
+
+
+def fetch(url):
     try:
-        subprocess.run([editor, path])
-    except Exception as e:
-        log('warn', f"Editor failed: {e}")
-    
-# File IO
-def write_text(path, content):
-    Path(path).write_text(content, encoding='utf-8')
-    
-# Guesses title (based on what prefixes all posts)
+        html = requests.get(url, headers=HEADERS, timeout=10).text
+        return BeautifulSoup(html, 'html.parser')
+    except requests.RequestException as e:
+        warn(f"Failed to fetch {url}: {e}")
+        return BeautifulSoup("", "html.parser")
+
+
+def follow_chain(seed, temperature=0.5):
+    visited, chain, titles, vecs = set(), [], [], []
+    url = norm(seed)
+    op = None
+
+    while url and url not in visited:
+        visited.add(url)
+        info(f"[{len(chain)+1}] {url}")
+        chain.append(url)
+
+        soup = fetch(url)
+
+        if not op:
+            a = soup.select_one('a[href^="/user/"]')
+            if a:
+                op = a.text.strip()
+
+        candidates = []
+        for a in soup.select('a[href]'):
+            href = norm(urljoin(url, a['href']))
+            t = a.text.strip()
+            if not t or len(t) > 120 or 'comments' not in href or href in visited:
+                continue
+            try:
+                v = model.encode([t])[0]
+                avg = np.mean(vecs, axis=0) if vecs else v
+                if titles and cosine(v, avg) < temperature:
+                    warn(f"↓ Skipping (too different): {t}")
+                    continue
+                candidates.append((href, t, v))
+            except Exception as e:
+                warn(f"Encoding error on '{t}': {e}")
+
+        if not candidates:
+            break
+
+        next_url, t, v = candidates[0]
+        url = next_url
+        titles.append(t)
+        vecs.append(v)
+
+    done(f"Found {len(chain)} post(s).")
+    return chain
+
+
+def fetch_posts(urls):
+    all, titles, authors = [], [], []
+    for u in urls:
+        try:
+            j = requests.get(norm(u) + "/.json", headers=HEADERS, timeout=10).json()
+            post = j[0]['data']['children'][0]['data']
+            t, b, a = post['title'], post['selftext'].strip(), post['author']
+            if b:
+                info(f"✓ {t} (u/{a})")
+                titles.append(t)
+                authors.append(a)
+                all.append((t, a, b))
+            else:
+                warn(f"Empty post: {u}")
+        except (requests.RequestException, KeyError, IndexError, json.JSONDecodeError) as e:
+            warn(f"Error parsing {u}: {e}")
+    return all, titles, max(set(authors), key=authors.count) if authors else "Anonymous"
+
+
 def guess_title(words):
     split = [re.findall(r'\w+', w.lower()) for w in words]
     if not split:
@@ -57,127 +111,38 @@ def guess_title(words):
             return " ".join(first[:i]).title() or "Untitled"
     return " ".join(first).title()
 
-# Markdown Cleanup
+
 def to_markdown(posts):
     return "\n\n\\newpage\n\n".join(f"# {t}\n\n*by u/{a}*\n\n{b}" for t, a, b in posts)
-    
-    
-# Crawler #
-
-# Download    
-def safe_json(url):
-    try:
-        return requests.get(url, headers=HEADERS, timeout=10).json()
-    except Exception as e:
-        log('warn', f"Error loading JSON from {url}: {e}")
-        return None
-        
-def fetch(url):
-    try:
-        html = requests.get(url, headers=HEADERS, timeout=10).text
-        return BeautifulSoup(html, 'html.parser')
-    except requests.RequestException as e:
-        log('warn', f"Failed to fetch {url}: {e}")
-        return BeautifulSoup("", "html.parser")
-
-# Exract & Prune Links from Post Body
-def extract_candidates(soup, url, visited, vecs, temperature):
-    candidates = []
-    for a in soup.select('a[href]'):
-        href = norm(urljoin(url, a['href']))
-        t = a.text.strip()
-        if not is_valid_candidate(href, t, visited): # Prune
-            continue
-        try:
-            v = model.encode([t])[0]
-            avg = np.mean(vecs, axis=0) if vecs else v
-            if vecs and cosine(v, avg) < temperature:
-                log('warn', f"↓ Skipping (too different): {t}")
-                continue
-            candidates.append((href, t, v))
-        except Exception as e:
-            log('warn', f"Encoding error on '{t}': {e}")
-    return candidates
-
-# Main Crawler Function
-def follow_chain(seed, temperature=0.5):
-    visited, chain, titles, vecs = set(), [], [], []
-    url = norm(seed)
-    op = None
-
-    while url and url not in visited:
-        visited.add(url)
-        log('info', f"[{len(chain)+1}] {url}")
-        chain.append(url)
-
-        soup = fetch(url)
-
-        if not op:
-            a = soup.select_one('a[href^="/user/"]')
-            if a:
-                op = a.text.strip()
-
-        candidates = extract_candidates(soup, url, visited, vecs, temperature)
-        if not candidates:
-            break
-
-        url, t, v = candidates[0]
-        titles.append(t)
-        vecs.append(v)
-
-    log('done', f"Found {len(chain)} post(s).")
-    return chain
 
 
-# Downloader #
-
-# Main Downloader Function
-def fetch_posts(urls):
-    all_posts, titles, authors = [], [], []
-    for u in urls:
-        j = safe_json(u + "/.json")
-        if not j:
-            continue
-        try:
-            post = j[0]['data']['children'][0]['data']
-            t, b, a = post['title'], post['selftext'].strip(), post['author']
-            if b:
-                log('info', f"✓ {t} (u/{a})")
-                titles.append(t)
-                authors.append(a)
-                all_posts.append((t, a, b))
-            else:
-                log('warn', f"Empty post: {u}")
-        except (KeyError, IndexError) as e:
-            log('warn', f"Error parsing {u}: {e}")
-    main_author = max(set(authors), key=authors.count) if authors else "Anonymous"
-    return all_posts, titles, main_author
-
-    
-# Convert and save from raw reddit markdown #
-
-# Save raw markdown (with cleanup)
 def write_md(posts, title, author, path):
-    write_text(path, to_markdown(posts))
-    log('done', f"Markdown: {path}")
+    md = to_markdown(posts)
+    Path(path).write_text(md, encoding='utf-8')
+    done(f"Markdown: {path}")
 
-# Convert to .json and save
+
 def write_json(posts, title, author, path):
     doc = {
         "title": title,
         "author": author,
         "chapters": [{"title": t, "author": a, "body": b} for t, a, b in posts]
     }
-    write_text(path, json.dumps(doc, indent=2))
-    log('done', f"JSON: {path}")
+    Path(path).write_text(json.dumps(doc, indent=2), encoding='utf-8')
+    done(f"JSON: {path}")
 
-# Convert using pandoc and save
-def convert_via_pandoc(posts, title, author, fmt, out, cover):
+
+def convert(posts, title, author, fmt, out, cover=None):
+    if fmt in ("markdown", "md"):
+        return write_md(posts, title, author, out)
+    if fmt == "json":
+        return write_json(posts, title, author, out)
+
     md = to_markdown(posts)
     css = "body { font-family: serif; margin: 5%; line-height: 1.6; }"
     with tempfile.TemporaryDirectory() as tmp:
-        write_text(Path(tmp) / "in.md", md)
-        write_text(Path(tmp) / "style.css", css)
+        Path(tmp, "in.md").write_text(md, encoding='utf-8')
+        Path(tmp, "style.css").write_text(css)
         args = [
             f"--metadata=title:{title}",
             f"--metadata=author:{author}",
@@ -186,32 +151,24 @@ def convert_via_pandoc(posts, title, author, fmt, out, cover):
         if fmt == "epub" and cover:
             args.append(f"--epub-cover-image={cover}")
         try:
-            pypandoc.convert_file(
-                str(Path(tmp) / "in.md"), fmt,
-                outputfile=os.path.abspath(out),
-                extra_args=args, cworkdir=tmp
-            )
-            log('done', f"{fmt.upper()}: {out}")
+            pypandoc.convert_file(Path(tmp, "in.md"), fmt, outputfile=os.path.abspath(out), extra_args=args, cworkdir=tmp)
+            done(f"{fmt.upper()}: {out}")
         except RuntimeError as e:
-            log('warn', f"Conversion failed: {e}")
+            warn(f"Conversion failed: {e}")
             sys.exit(1)
 
-# Main Converter Function
-def convert(posts, title, author, fmt, out, cover=None):
-    if fmt in {"markdown", "md"}:
-        write_md(posts, title, author, out)
-    elif fmt == "json":
-        write_json(posts, title, author, out)
-    else:
-        convert_via_pandoc(posts, title, author, fmt, out, cover)
 
-# Core Logic #
+def edit(path):
+    try:
+        subprocess.run([os.environ.get("EDITOR", "nano" if os.name != "nt" else "notepad"), path])
+    except Exception as e:
+        warn(f"Editor failed: {e}")
+
 
 def main():
-    # CLI
     a = argparse.ArgumentParser(description="📘 Reddit story chain to EPUB/MD/JSON/PDF/etc")
     a.add_argument("url", nargs="?", help="Starting Reddit URL")
-    a.add_argument("--edit", nargs="?", const=True, metavar="EDITOR", help="Edit URL list with optional editor (defaults to $EDITOR or vi)")
+    a.add_argument("--edit", action="store_true", help="Edit URL list before export")
     a.add_argument("--crawl-only", metavar="FILE", help="Save crawl list to file")
     a.add_argument("--from-list", metavar="FILE", help="Read URLs from file")
     a.add_argument("--format", default="epub", help="Output format: epub, pdf, markdown, json, html, docx, odt...")
@@ -224,8 +181,8 @@ def main():
     elif args.url:
         urls = follow_chain(args.url, temperature=args.temperature)
         if args.crawl_only:
-            write_text(args.crawl_only, "\n".join(urls))
-            log('done', f"Saved to {args.crawl_only}")
+            Path(args.crawl_only).write_text("\n".join(urls))
+            done(f"Saved to {args.crawl_only}")
             return
     else:
         a.error("Provide a Reddit URL or --from-list")
@@ -234,11 +191,9 @@ def main():
         with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".txt") as f:
             f.write("\n".join(urls))
             f.flush()
-            chosen_editor = args.edit if isinstance(args.edit, str) else os.environ.get("EDITOR", "vi")
-            edit(f.name, chosen_editor)
+            edit(f.name)
             urls = read_lines(f.name)
 
-    # Run
     posts, titles, author = fetch_posts(urls)
     title = guess_title(titles)
     ext = "json" if args.format == "json" else "md" if "md" in args.format else args.format
@@ -247,13 +202,12 @@ def main():
 
 
 if __name__ == "__main__":
-    # No crash on interupt
     try:
         main()
     except KeyboardInterrupt:
-        log('warn', "Interrupted by user.")
+        warn("Interrupted by user.")
         sys.exit(130)
     except Exception as e:
-        log('warn', f"Unhandled error: {e.__class__.__name__}: {e}")
+        warn(f"Unhandled error: {e.__class__.__name__}: {e}")
         sys.exit(1)
 
