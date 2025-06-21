@@ -158,9 +158,10 @@ def convert(posts, title, author, fmt, out, cover=None):
             sys.exit(1)
 
 
-def edit(path):
+def edit(path, editor=None):
     try:
-        subprocess.run([os.environ.get("EDITOR", "nano" if os.name != "nt" else "notepad"), path])
+        editor = editor or os.environ.get("EDITOR", "nano" if os.name != "nt" else "notepad")
+        subprocess.run([editor, path])
     except Exception as e:
         warn(f"Editor failed: {e}")
 
@@ -168,7 +169,7 @@ def edit(path):
 def main():
     a = argparse.ArgumentParser(description="📘 Reddit story chain to EPUB/MD/JSON/PDF/etc")
     a.add_argument("url", nargs="?", help="Starting Reddit URL")
-    a.add_argument("--edit", action="store_true", help="Edit URL list before export")
+    a.add_argument("--edit", nargs='?', const=True, metavar="EDITOR", help="Edit URL list before export (optionally specify editor)")
     a.add_argument("--crawl-only", metavar="FILE", help="Save crawl list to file")
     a.add_argument("--from-list", metavar="FILE", help="Read URLs from file")
     a.add_argument("--format", default="epub", help="Output format: epub, pdf, markdown, json, html, docx, odt...")
@@ -191,7 +192,7 @@ def main():
         with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".txt") as f:
             f.write("\n".join(urls))
             f.flush()
-            edit(f.name)
+            edit(f.name, editor=args.edit if isinstance(args.edit, str) else None)
             urls = read_lines(f.name)
 
     posts, titles, author = fetch_posts(urls)
